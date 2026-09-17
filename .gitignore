@@ -4,3 +4,6 @@ CLAUDE.md
 .venv/
 __pycache__/
 .DS_Store
+*.duckdb
+*.duckdb.wal
+data/raw/.dev/
