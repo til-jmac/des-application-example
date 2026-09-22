@@ -8,6 +8,8 @@
 ## What I built and who for
 A tool for office workers near The Information Lab's City of London office (25 Watling Street, EC4M 9BR) deciding where to eat lunch. It pulls UK Food Hygiene Rating Scheme data for everywhere within a 0.25-mile walk of the office, models it into one clean table, and surfaces it in a small app with two things a generic ratings list won't give you: places **overdue for reinspection** and places with a **recently changed or pending rating**.
 
+![Lunch Safety Finder app screenshot](docs/app-screenshot.png)
+
 ## The data
 [FSA Food Hygiene Rating Scheme (FHRS) API](https://api.ratings.food.gov.uk/help) — free, no API key or registration required (just a required `x-api-version: 2` header). Published under the Open Government Licence.
 
