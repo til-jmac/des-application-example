@@ -1,36 +1,36 @@
 # Lunch Safety Finder
 
-> **Note:** This is a worked example built by The Information Lab to show
+> **Note:** This is a worked example The Information Lab built to show
 > Data Engineering School candidates what a strong submission looks like -
-> not a real applicant's project. See "Where AI helped" below for how it was
-> actually built.
+> not a real applicant's project. See "Where AI helped" below for how it
+> was built.
 
 ## What I built and who for
-A tool for office workers near The Information Lab's City of London office (25 Watling Street, EC4M 9BR) deciding where to eat lunch. It pulls UK Food Hygiene Rating Scheme data for everywhere within a 0.25-mile walk of the office, models it into one clean table, and surfaces it in a small app with two things a generic ratings list won't give you: places **overdue for reinspection** and places with a **recently changed or pending rating**.
+A tool for office workers near The Information Lab's City of London office (25 Watling Street, EC4M 9BR) who are deciding where to eat lunch. It pulls UK Food Hygiene Rating Scheme data for everywhere within a 0.25-mile walk of the office, models it into one clean table, and surfaces two things a plain ratings list skips: places **overdue for reinspection**, and places with a rating that's **recently changed or about to**.
 
 ![Lunch Safety Finder app screenshot](docs/app-screenshot.png)
 
 ## The data
-[FSA Food Hygiene Rating Scheme (FHRS) API](https://api.ratings.food.gov.uk/help) — free, no API key or registration required (just a required `x-api-version: 2` header). Published under the Open Government Licence.
+[FSA Food Hygiene Rating Scheme (FHRS) API](https://api.ratings.food.gov.uk/help). Free, no API key or registration - just a required `x-api-version: 2` header. The FSA publishes it under the Open Government Licence.
 
-Pulled via the `Establishments` endpoint, searching by distance from the office's coordinates (geocoded once via [postcodes.io](https://postcodes.io)) and sorted by proximity.
+The extraction script queries the `Establishments` endpoint, searching by distance from the office's coordinates (geocoded once via [postcodes.io](https://postcodes.io)) and sorting by proximity.
 
-**A quirk worth flagging:** the API's `maxDistanceLimit` parameter is accepted but doesn't actually filter results server-side — `meta.totalCount` stays at the full nationwide count (~15,800) no matter what value you pass. Only `sortOptionKey=distance` does anything, and it sorts the *entire* dataset. So the extraction script pages through the distance-sorted results itself and stops once a page's closest establishment falls outside the radius — the real filtering happens in SQL, not at the API.
+**A quirk worth flagging:** the API accepts `maxDistanceLimit` but doesn't filter with it. `meta.totalCount` stays at the full nationwide count (about 15,800) no matter what value you pass. Only `sortOptionKey=distance` does anything, and it sorts the entire dataset. So the extraction script pages through the distance-sorted results itself and stops once a page's closest establishment falls outside the radius. The real filtering happens in SQL, not at the API.
 
 ## How it works
 Three layers, all inside `data/lunch_safety.duckdb`, built by `sql/run_models.py`:
 
-1. **`raw_establishments`** (`sql/01_raw.sql`) — loads every committed file in `data/raw/` and unnests the `establishments` array into one row per establishment, tagged with its source file.
-2. **`stg_establishments`** (`sql/02_staging.sql`) — typed, renamed, cleaned. This is also where the real radius cutoff happens (`WHERE Distance <= 0.25`), since the API doesn't enforce it. `RatingValue` comes back as text because it isn't always numeric: England/Wales/NI (`FHRS` scheme) use 0-5, but Scotland (`FHIS` scheme) uses `Pass`/`Improvement Required`, and anything awaiting its first inspection uses `AwaitingInspection`/`Exempt` regardless of scheme. `TRY_CAST` turns the non-numeric cases into `NULL` rather than erroring — correct, since those establishments genuinely have no numeric rating. Nothing in this pull is actually Scottish, but the model handles `FHIS` correctly anyway rather than assuming England-only data forever.
-3. **`mart_establishments`** (`sql/03_marts.sql`) — one row per `fhrsid`, deduplicated across every raw snapshot pulled so far (`ROW_NUMBER() OVER (PARTITION BY fhrsid ORDER BY rating_date DESC, _source_file DESC)`), plus the derived columns the app uses:
-   - `is_lunch_relevant` — the raw pull also includes supermarkets, importers/exporters and a school; this flags the business types you'd actually get lunch from.
-   - `is_overdue_for_reinspection` — no rating in the last 18 months. A simple, deliberately-flat proxy: the FSA's real inspection frequency is risk-based (6-24+ months depending on premises risk), not a fixed interval.
-   - `is_new_rating_pending` — a direct passthrough of the API's own `NewRatingPending`, the most defensible "about to change" signal available.
-   - `is_recently_rated` — rated in the last 3 months.
+1. **`raw_establishments`** (`sql/01_raw.sql`): loads every committed file in `data/raw/` and unnests the `establishments` array into one row per establishment, tagged with its source file.
+2. **`stg_establishments`** (`sql/02_staging.sql`): typed, renamed, cleaned. This is also where the real radius cutoff happens (`WHERE Distance <= 0.25`), since the API doesn't enforce it. `RatingValue` comes back as text because it isn't always numeric: England/Wales/NI (`FHRS` scheme) use 0-5, but Scotland (`FHIS` scheme) uses `Pass`/`Improvement Required`, and anything awaiting its first inspection uses `AwaitingInspection`/`Exempt` regardless of scheme. `TRY_CAST` turns the non-numeric cases into `NULL` instead of erroring, which is correct: those establishments have no numeric rating yet. Nothing in this pull is Scottish, but the model still handles `FHIS` correctly rather than assuming England-only data forever.
+3. **`mart_establishments`** (`sql/03_marts.sql`): one row per `fhrsid`, deduplicated across every raw snapshot pulled so far (`ROW_NUMBER() OVER (PARTITION BY fhrsid ORDER BY rating_date DESC, _source_file DESC)`), plus the derived columns the app uses:
+   - **`is_lunch_relevant`**: the raw pull also includes supermarkets, importers/exporters and a school. This flags the business types you'd get lunch from.
+   - **`is_overdue_for_reinspection`**: no rating in the last 18 months. A simple, flat proxy chosen on purpose - the FSA's real inspection frequency is risk-based (6-24+ months depending on premises risk), not a fixed interval.
+   - **`is_new_rating_pending`**: a direct passthrough of the API's own `NewRatingPending` field - the clearest "about to change" signal available.
+   - **`is_recently_rated`**: rated in the last 3 months.
 
-**Idempotency:** every model does a full `CREATE OR REPLACE TABLE` rebuild from *all* committed raw files, every run — no incremental merge. At a few hundred rows this costs milliseconds and is trivially correct: re-running against unchanged raw data reproduces an identical table (verified — see the two raw snapshots in `data/raw/`, pulled ~20 minutes apart, both rebuild to the same 332-row mart), and a new snapshot deterministically keeps the most recent record per establishment.
+**Idempotency:** every model does a full `CREATE OR REPLACE TABLE` rebuild from all committed raw files, every run. No incremental merge. At a few hundred rows this costs milliseconds and is easy to get right: re-running against unchanged raw data reproduces an identical table (verified - the two raw snapshots in `data/raw/`, pulled about 20 minutes apart, both rebuild to the same 332-row mart), and a new snapshot keeps the most recent record per establishment.
 
-**What genuine "rating changed" detection would need:** raw files are immutable and timestamped specifically so this is possible later — a self-join of the two most recent snapshots per `fhrsid` would catch a real change. With this project's timeframe that's more machinery than the payoff justifies, so it's deferred (see below) and the three proxy flags above stand in for it.
+**What genuine "rating changed" detection would need:** raw files are immutable and timestamped so this is possible later. A self-join of the two most recent snapshots per `fhrsid` would catch a real change. It isn't built yet - with only two snapshots so far it wouldn't add much, so the three proxy flags above stand in for it until there's more raw history (see "What I would do next").
 
 ## How to run it
 ```
@@ -44,7 +44,7 @@ streamlit run app/lunch_safety_app.py
 # optional, needs network - refreshes data/raw/ from the live API:
 python extract/fetch_establishments.py
 ```
-No credentials of any kind are needed — the FHRS API requires none.
+No credentials of any kind are needed. The FHRS API requires none.
 
 Run the tests with `python -m pytest tests/` (checks: mart has rows, no duplicate `fhrsid`, no unexpected nulls, everything within the search radius, rating category matches the numeric rating).
 
@@ -55,6 +55,6 @@ Run the tests with `python -m pytest tests/` (checks: mart has rows, no duplicat
 - Move from full-rebuild to incremental if the raw history grows large enough that milliseconds stop being milliseconds.
 
 ## Where AI helped
-This project was built end-to-end with Claude Code, directed by The Information Lab's Data Engineering School team. AI handled the research (confirming the FHRS API needs no auth, discovering the `maxDistanceLimit`/`sortOptionKey` behaviour above by testing real requests since the docs don't mention it), the technical design (the raw/staging/mart split, the idempotency strategy, the flag logic), and the implementation. The human side of this was choosing the API/topic and the lunch-near-the-office persona, reviewing and approving the plan before any code was written, and verifying the results — the test suite passing, and the mart staying at 332 rows across two real raw pulls taken ~20 minutes apart — rather than hand-writing the code.
+Claude Code built this project end-to-end, directed by The Information Lab's Data Engineering School team. AI handled the research (confirming the FHRS API needs no auth, discovering the `maxDistanceLimit`/`sortOptionKey` behaviour above by testing real requests since the docs don't mention it), the technical design (the raw/staging/mart split, the idempotency strategy, the flag logic), and the implementation. The human side of this was choosing the API/topic and the lunch-near-the-office persona, reviewing and approving the plan before any code was written, and verifying the results rather than hand-writing the code - the test suite passing, and the mart staying at 332 rows across two real raw pulls taken about 20 minutes apart.
 
-We're showing this process deliberately: you're welcome to use AI to enhance your own submission, the same as we did here. What we look for is whether you can explain your work and the decisions behind it - not whether you typed every line yourself.
+We're showing this process on purpose: you're welcome to use AI to enhance your own submission, the same as we did here. What we look for is whether you can explain your work and the decisions behind it, not whether you typed every line yourself.
