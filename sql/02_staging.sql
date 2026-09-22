@@ -11,6 +11,9 @@
 -- 'Exempt' regardless of scheme. TRY_CAST returns NULL for the non-numeric
 -- cases instead of erroring, which is the semantically correct outcome - an
 -- "Awaiting Inspection" business genuinely has no numeric rating yet.
+-- Naming convention: source PascalCase columns become snake_case, nested
+-- fields get a descriptive suffix instead of staying generic (scores.Hygiene
+-- -> hygiene_score, geocode.latitude -> latitude).
 CREATE OR REPLACE TABLE stg_establishments AS
 SELECT
     FHRSID AS fhrsid,
@@ -32,6 +35,11 @@ SELECT
     Hygiene AS hygiene_score,
     Structural AS structural_score,
     ConfidenceInManagement AS confidence_in_management_score,
+    -- The source API returns these as strings inside the geocode object,
+    -- not numbers. TRY_CAST rather than CAST defensively: every
+    -- establishment in this particular pull happens to have a geocode, but
+    -- the FSA API doesn't guarantee that in general, and a missing geocode
+    -- should become NULL here rather than fail the whole model.
     TRY_CAST(longitude AS DOUBLE) AS longitude,
     TRY_CAST(latitude AS DOUBLE) AS latitude,
     LocalAuthorityName AS local_authority_name,

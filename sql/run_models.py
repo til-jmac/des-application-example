@@ -17,6 +17,9 @@ def run():
     config.DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(config.DUCKDB_PATH))
 
+    # Sorting by filename relies on the "NN_name.sql" numbering convention -
+    # raw before staging before marts - so this stays a plain glob-and-sort
+    # rather than a hardcoded list that someone has to remember to update.
     sql_files = sorted(config.SQL_DIR.glob("[0-9]*.sql"))
     if not sql_files:
         raise RuntimeError(f"No numbered SQL model files found in {config.SQL_DIR}")
@@ -25,9 +28,15 @@ def run():
 
     for sql_file in sql_files:
         sql = sql_file.read_text()
+        # The .sql files can't know the repo's absolute path or the chosen
+        # radius at authoring time, so they use placeholder tokens and this
+        # script fills them in from config.py before running. A real
+        # templating library would be overkill for two substitutions.
         sql = sql.replace("__RAW_GLOB__", raw_glob)
         sql = sql.replace("__SEARCH_RADIUS_MILES__", str(config.SEARCH_RADIUS_MILES))
         print(f"running {sql_file.name}")
+        # Every model uses CREATE OR REPLACE TABLE, so running this against
+        # an existing .duckdb file is a full, safe rebuild - not an append.
         con.execute(sql)
 
     row_count = con.execute("SELECT count(*) FROM mart_establishments").fetchone()[0]
